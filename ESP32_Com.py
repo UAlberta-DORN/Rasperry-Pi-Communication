@@ -33,16 +33,16 @@ class Controller:
         self.reference_lighting = 0.7  # normalized units
         self.measured_lighting = 0.7
         self.window_lighting = 0.8
+        self.theta = pi / 2
+        self.h = 0
+        self.light_err_thresh = 0.01
+        self.light_timeout = 5
 
         # Temperature control parameters
         self.reference_temperature = 20  # degrees Celsius
         self.measured_temperature = 20
         self.temp_integral_error = 0
         self.temp_past_error = 0
-        self.theta = pi / 2
-        self.h = 0
-        self.light_err_thresh = 0.01
-        self.light_timeout = 5
 
     def main_loop(self):
         try:
