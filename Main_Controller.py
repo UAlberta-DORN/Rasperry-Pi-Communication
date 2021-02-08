@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 import pandas as pd
 from os import path
+import json
 
 
 # CSV File Parameters
@@ -16,15 +17,19 @@ for i in range(MAX_SATELLITE_DEVICES):
                          'Lighting {}'.format(i)]
 
 
+# JSON Parameters
+JSON_PATH = 'dorn.json'
+
+
 # Serial Parameters
 PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
 
 
 # Temperature PID Gains
-P = 1.027512
-I = 9.1e-5
-D = 0.0011
+P = 1.0
+I = 1.9e-5
+D = -0.276
 
 
 # Lighting Control Parameters
@@ -42,11 +47,49 @@ LOG_DATA_PERIOD = 60
 
 
 def interpret_serial_data(serial_input):
-    """
-    This function converts the string received through serial to numerical data
-    """
-    buffer_data = serial_input
-    return buffer_data
+    # This function converts the string received through serial to numerical data
+    buffer = 2 * MAX_SATELLITE_DEVICES * [np.nan]
+
+    dict = json.loads(serial_input)
+    buffer[0] = dict['data']['temp']
+    buffer[1] = dict['data']['light']
+
+    n = 2
+    for item in dict['children'].items():
+        buffer[n] = item[1]['data']['temp']
+        buffer[n + 1] = item[1]['data']['light']
+        n += 2
+    return buffer
+
+
+def reset_json():
+    data = {}
+    data['current temperature'] = 0.0
+    data['current lighting'] = 0.0
+    data['reference temperature'] = 0.0
+    data['reference lighting'] = 0.0
+    data['manual heater control'] = False
+    data['manual heater value'] = 0
+    data['manual blind control'] = False
+    data['manual height value'] = 0
+    data['manual tilt value'] = 0
+    with open('dorn.json', 'w') as outfile:
+        json.dump(data, outfile)
+
+
+def read_json(header):
+    with open(JSON_PATH, 'r') as json_file:
+        data = json.load(json_file)
+    return data[header]
+
+
+def write_to_json(header, value):
+    dict = {header: value}
+    with open(JSON_PATH, 'r+') as json_file:
+        data = json.load(json_file)
+        data.update(dict)
+        json_file.seek(0)
+        json.dump(data, json_file)
 
 
 class Main_Controller:
@@ -60,13 +103,11 @@ class Main_Controller:
         self.serial_is_running = False
 
         # Temperature parameters
-        self.reference_temperature = 20
         self.int_error = 0
         self.past_error = 0
 
         # Lighting parameters
         self.lighting_is_running = False
-        self.reference_lighting = 50 / MAX_LUX
         self.theta = np.pi / 180
         self.height = 0
 
@@ -76,6 +117,9 @@ class Main_Controller:
         if not path.exists(CSV_FILE_PATH):
             df = pd.DataFrame(columns=HEADERS)
             df.to_csv(CSV_FILE_PATH, mode='w', header=True, index=False)
+
+        if not path.exists(JSON_PATH):
+            reset_json()
 
 
     def main_loop(self):
@@ -101,8 +145,7 @@ class Main_Controller:
             if time.time() - lighting_time >= LIGHT_CONTROL_PERIOD:
                 lighting_time = time.time()
                 if not self.lighting_is_running:
-                    lighting_thread = threading.Thread(target=self.control_lighting,
-                                                       daemon=True)
+                    lighting_thread = threading.Thread(target=self.control_lighting)
                     lighting_thread.start()
 
 
@@ -113,11 +156,10 @@ class Main_Controller:
                 # when inWaiting is greater than 0, it means a new line was received via serial
                 if self.serial_com.inWaiting() > 0:
                     serial_input = self.serial_com.readline().decode('utf-8').rstrip()
-                    buffer_data = interpret_serial_data(serial_input)
-                    # buffer_lock makes it so only one process can access the data buffer at a time
+                    serial_data = interpret_serial_data(serial_input)
+
                     self.buffer_lock.acquire()
-                    # The buffer index will be included in the received serial message
-                    self.data_buffer[0] = buffer_data
+                    self.data_buffer = serial_data
                     self.buffer_lock.release()
         except:
             # What happens if the serial communication is broken?
@@ -142,7 +184,11 @@ class Main_Controller:
         if np.isnan(temperature):
             print('No Temperature Data Found')
             return
-        error = self.reference_temperature - temperature
+
+        write_to_json('current temperature', temperature)
+        reference_temperature = read_json('reference temperature')
+
+        error = reference_temperature - temperature
         self.int_error += error
         diff_error = error - self.past_error
         pid_output = P * error + I * self.int_error + D * diff_error
@@ -179,7 +225,10 @@ class Main_Controller:
                 else:
                     lighting /= MAX_LUX
 
-                error = self.reference_lighting - lighting
+                write_to_json('current lighting', lighting)
+                reference_lighting = read_json('reference lighting') / MAX_LUX
+
+                error = reference_lighting - lighting
                 if abs(error) <= ERROR_THRESHOLD:
                     break
 
@@ -204,5 +253,9 @@ class Main_Controller:
 
 
 if __name__ == '__main__':
-    main_controller = Main_Controller()
-    main_controller.main_loop()
+    # main_controller = Main_Controller()
+    # main_controller.main_loop()
+    message = '{   "header": {     "DEVICE_TYPE":0,     "POWER_SOURCE": 0,     "DEVICE_ID": "5A:9E:AD:F5:06:69"   },   "data": {     "temp": -273.15,     "light": -273.15   },   "children": {     "9C:9E:BD:F4:06:69": {       "header": {         "DEVICE_TYPE": 1,         "POWER_SOURCE": 0,         "DEVICE_ID": "9C:9E:BD:F4:06:69"       },       "data": {         "temp": -273.15,         "light": -273.15       }     },     "7C:9E:BD:F4:06:68": {       "header": {         "DEVICE_TYPE": 1,         "POWER_SOURCE": 0,         "DEVICE_ID": "7C:9E:BD:F4:06:68"       },       "data": {         "temp": -273.15,         "light": -273.15       }     }   } }'
+    temp, light = interpret_serial_data(message)
+    print(temp)
+    print(light)
